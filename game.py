@@ -178,8 +178,8 @@ def end_turn(state: GameState, hunting_choices: Optional[Dict[int, int]] = None)
     if state.winner:
         return
     hunting_choices = hunting_choices or {}
-    resolve_hunting(state, hunting_choices)
-    resolve_feeding(state)
+    fed_predators = resolve_hunting(state, hunting_choices)
+    resolve_feeding(state, fed_predators)
     resolve_starvation(state)
     resolve_conversion(state)
     active_player = state.players[state.active_player_index]
@@ -192,7 +192,8 @@ def end_turn(state: GameState, hunting_choices: Optional[Dict[int, int]] = None)
     start_turn(state)
 
 
-def resolve_hunting(state: GameState, hunting_choices: Dict[int, int]) -> None:
+def resolve_hunting(state: GameState, hunting_choices: Dict[int, int]) -> set[int]:
+    fed_predators: set[int] = set()
     predators = [
         animal
         for animal in state.animals
@@ -200,7 +201,7 @@ def resolve_hunting(state: GameState, hunting_choices: Dict[int, int]) -> None:
     ]
     if not predators:
         state.add_log("No hay depredadores con hambre para cazar.")
-        return
+        return fed_predators
     state.add_log("Fase de caza iniciada.")
     for predator in predators:
         predator_card = CARD_INDEX[predator.card_id]
@@ -215,7 +216,9 @@ def resolve_hunting(state: GameState, hunting_choices: Dict[int, int]) -> None:
         if not is_viable_prey(predator_card["level"], prey):
             state.add_log(f"{predator_card['name']} no puede cazar esa presa.")
             continue
-        resolve_single_hunt(state, predator, prey)
+        if resolve_single_hunt(state, predator, prey):
+            fed_predators.add(predator.instance_id)
+    return fed_predators
 
 
 def is_viable_prey(predator_level: int, prey: AnimalInstance) -> bool:
@@ -224,7 +227,7 @@ def is_viable_prey(predator_level: int, prey: AnimalInstance) -> bool:
     return prey_card["type"] in {"Herbivore", "Omnivore"} and prey_card["level"] >= threshold
 
 
-def resolve_single_hunt(state: GameState, predator: AnimalInstance, prey: AnimalInstance) -> None:
+def resolve_single_hunt(state: GameState, predator: AnimalInstance, prey: AnimalInstance) -> bool:
     predator_card = CARD_INDEX[predator.card_id]
     prey_card = CARD_INDEX[prey.card_id]
     if predator_card["instinct"] >= prey_card["instinct"]:
@@ -232,7 +235,7 @@ def resolve_single_hunt(state: GameState, predator: AnimalInstance, prey: Animal
     else:
         if predator_card["mobility"] < prey_card["mobility"]:
             state.add_log(f"{prey_card['name']} escapa por movilidad superior.")
-            return
+            return False
         state.add_log(f"{predator_card['name']} alcanza a {prey_card['name']} en movilidad.")
 
     predator_weight_scaled = min(100, int(predator_card["weightKg"] / 10))
@@ -247,11 +250,13 @@ def resolve_single_hunt(state: GameState, predator: AnimalInstance, prey: Animal
             predator.hunger = 0
         else:
             predator.hunger = max(predator.hunger - 1, 0)
+        return True
     else:
         state.add_log(f"{prey_card['name']} resiste el combate contra {predator_card['name']}.")
+        return False
 
 
-def resolve_feeding(state: GameState) -> None:
+def resolve_feeding(state: GameState, fed_predators: set[int]) -> None:
     state.add_log("Fase de alimentación de CN.")
     biome = state.biome
     for level in range(1, biome.lmax + 1):
@@ -293,6 +298,17 @@ def resolve_feeding(state: GameState) -> None:
             for animal in level_animals:
                 animal.hunger += 1
             state.add_log("No hay CN suficiente para duelo: todos aumentan hambre.")
+
+    unfed_carnivores = [
+        animal
+        for animal in state.animals
+        if CARD_INDEX[animal.card_id]["type"] == "Carnivore"
+        and animal.instance_id not in fed_predators
+    ]
+    if unfed_carnivores:
+        for animal in unfed_carnivores:
+            animal.hunger += 1
+        state.add_log("Carnívoros sin presa aumentan hambre.")
 
 
 def resolve_starvation(state: GameState) -> None:
